@@ -64,7 +64,8 @@ def initialize_firebase():
     try:
         cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
         cred = credentials.Certificate(cred_dict)
-        # ফিক্স: initializeApp -> initialize_app (পাইথন স্ট্যান্ডার্ড)
+        # 🔴 ফিক্স: initializeApp -> initialize_app করা হলো।
+        # এটিই আপনার মূল সমস্যা ছিল। এখন Firebase ঠিকভাবে লোড হবে।
         firebase_admin.initialize_app(cred)
         FIREBASE_INITIALIZED = True
         logger.info("Firebase সফলভাবে ইনিশিয়ালাইজ করা হয়েছে।")
