@@ -1,4 +1,4 @@
-# -*- coding# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # উন্নত প্লে স্টোর স্ক্র্যাপার বট: বাটন-ভিত্তিক ইন্টারফেস, অ্যাডমিন ম্যানেজমেন্ট, এবং ফায়ারবেস ইন্টিগ্রেশন।
 
 import logging
@@ -64,7 +64,8 @@ def initialize_firebase():
     try:
         cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
         cred = credentials.Certificate(cred_dict)
-        firebase_admin.initializeApp(cred)
+        # ফিক্স: initializeApp -> initialize_app
+        firebase_admin.initialize_app(cred)
         FIREBASE_INITIALIZED = True
         logger.info("Firebase সফলভাবে ইনিশিয়ালাইজ করা হয়েছে।")
         return firestore.client()
