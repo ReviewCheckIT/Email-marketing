@@ -64,7 +64,7 @@ def initialize_firebase():
     try:
         cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
         cred = credentials.Certificate(cred_dict)
-        # ফিক্স: initializeApp -> initialize_app
+        # ফিক্স: initializeApp -> initialize_app (পাইথন স্ট্যান্ডার্ড)
         firebase_admin.initialize_app(cred)
         FIREBASE_INITIALIZED = True
         logger.info("Firebase সফলভাবে ইনিশিয়ালাইজ করা হয়েছে।")
@@ -289,6 +289,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def check_if_email_exists(email: str) -> bool:
     """ফায়ারবেসে ইমেইলটি আগে থেকে আছে কিনা তা পরীক্ষা করা।"""
     try:
+        # DB ইনিশিয়ালাইজেশন চেক
+        if not FIREBASE_INITIALIZED: return False
+        
         doc = db.collection(COLLECTION_EMAILS).document(email.lower()).get()
         return doc.exists
     except Exception as e:
@@ -298,6 +301,9 @@ async def check_if_email_exists(email: str) -> bool:
 async def save_app_data(app_data: dict) -> bool:
     """ফায়ারবেসে নতুন অ্যাপের ডেটা সংরক্ষণ করা।"""
     try:
+        # DB ইনিশিয়ালাইজেশন চেক
+        if not FIREBASE_INITIALIZED: return False
+        
         email_key = app_data.get('email', '').lower()
         if not email_key: return False
         
@@ -318,6 +324,7 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
 
     try:
         # প্লে স্টোর সার্চ: কীওয়ার্ড এবং সংখ্যার ওপর ভিত্তি করে ডেটা আনা হবে
+        # lang='bn' এবং country='us' ব্যবহার করা হচ্ছে যাতে স্ক্র্যাপিং এর সমস্যা না হয়
         search_results = play_search(keyword, lang='bn', country='us', n_hits=limit)
     except GooglePlayScraperException:
         await context.bot.send_message(context.user_data['user_id'], f"❌ স্ক্র্যাপিং ত্রুটি: Play Store থেকে ডেটা আনা যায়নি। কীওয়ার্ড: **{keyword}**", parse_mode=ParseMode.MARKDOWN)
@@ -325,31 +332,15 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
 
     newly_scraped_apps = []
     
-    # --- নতুন অ্যাপের একমাত্র কঠোর শর্ত: খুবই সম্প্রতি আপডেট (৯০ দিন) ---
-    max_days_old_for_new = 90 # ৯০ দিন (৩ মাসের মধ্যে আপডেট)
-
     for app in search_results:
         # ১. মৌলিক শর্ত: ডেভেলপার ইমেইল ঠিকানা অবশ্যই থাকতে হবে।
-        # দ্রষ্টব্য: এই ইমেইলটিই প্লে স্টোরে ডেভেলপার কন্টাক্ট হিসেবে তালিকাভুক্ত হয়।
         if not app.get('developerEmail'):
             continue
         
-        # ২. নতুনত্বের শর্ত: খুবই সাম্প্রতিক আপডেট (৯০ দিনের মধ্যে)
-        is_recently_updated = False
-        try:
-            # updated তারিখটি YY-MM-DDT... ফরম্যাটে থাকে, শুধু তারিখ অংশ নেওয়া হচ্ছে
-            updated_date_str = app.get('updated', '1970-01-01T00:00:00.000Z').split('T')[0]
-            updated_date = datetime.strptime(updated_date_str, '%Y-%m-%d')
-            # বর্তমান সময় থেকে আপডেটের সময়ের ব্যবধান ৯০ দিনের কম হতে হবে
-            if datetime.now() - updated_date <= timedelta(days=max_days_old_for_new):
-                is_recently_updated = True
-        except Exception:
-            # যদি তারিখ পড়তে না পারে, তবে সেটি বাদ যাবে (নিরাপত্তার জন্য)
-            pass
-
-        if not is_recently_updated:
-            continue
-
+        # ২. নতুনত্বের শর্ত: আপডেট ফিল্টার সম্পূর্ণ বাতিল করা হলো
+        # এই লাইনটি নিশ্চিত করছে যে 'updated' তারিখ যাই হোক না কেন, তা ফিল্টার হবে না।
+        is_recently_updated = True 
+        
         app_email = app['developerEmail'].strip()
         
         # ৩. ডুপ্লিকেট চেক: ইমেইলটি আগে থেকে ডেটাবেসে থাকলে বাদ যাবে।
@@ -399,7 +390,7 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
     else:
         await context.bot.send_message(
             context.user_data['user_id'], # ব্যক্তিগত চ্যাটে ফলাফল পাঠানো
-            f'❌ **{keyword}** কীওয়ার্ডের জন্য শর্তাবলী পূরণ করে এমন কোনো নতুন (অনন্য ডেভেলপার ইমেইল সহ) অ্যাপ খুঁজে পাওয়া যায়নি।\n(একমাত্র শর্তাবলী: ইমেইল থাকতে হবে এবং গত ৯০ দিনের মধ্যে আপডেট হতে হবে)।'
+            f'❌ **{keyword}** কীওয়ার্ডের জন্য শর্তাবলী পূরণ করে এমন কোনো নতুন (অনন্য ডেভেলপার ইমেইল সহ) অ্যাপ খুঁজে পাওয়া যায়নি।\n(একমাত্র শর্তাবলী: ডেভেলপার ইমেইল থাকতে হবে এবং ডুপ্লিকেট হওয়া চলবে না)।'
         )
 
 async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -408,6 +399,11 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
     await context.bot.send_message(user_id, "🗄️ ডেটাবেস থেকে সংগৃহীত সকল ইমেইল এক্সপোর্ট করা হচ্ছে...")
     
     try:
+        # DB ইনিশিয়ালাইজেশন চেক
+        if not FIREBASE_INITIALIZED:
+            await context.bot.send_message(user_id, "❌ Firebase ইনিশিয়ালাইজ হয়নি। এক্সপোর্ট করা সম্ভব নয়।")
+            return
+            
         docs = db.collection(COLLECTION_EMAILS).stream()
         
         all_data = [doc.to_dict() for doc in docs]
@@ -444,6 +440,11 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
 async def list_admins_logic(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """সকল অ্যাডমিনের তালিকা দেখানো।"""
     try:
+        # DB ইনিশিয়ালাইজেশন চেক
+        if not FIREBASE_INITIALIZED:
+            await context.bot.send_message(user_id, "❌ Firebase ইনিশিয়ালাইজ হয়নি। তালিকা দেখানো সম্ভব নয়।")
+            return
+            
         docs = db.collection(COLLECTION_ADMINS).stream()
         
         admin_list = [doc.id for doc in docs]
