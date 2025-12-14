@@ -55,6 +55,7 @@ def initialize_firebase():
     """এনভায়রনমেন্ট ভেরিয়েবল থেকে ক্রেডেনশিয়াল ব্যবহার করে Firebase অ্যাপ ইনিশিয়ালাইজ করা।"""
     global FIREBASE_INITIALIZED
     if FIREBASE_INITIALIZED:
+        # যদি আগে থেকেই ইনিশিয়ালাইজ করা থাকে, তবে ক্লায়েন্ট রিটার্ন করুন
         return firestore.client()
         
     if not FIREBASE_CREDENTIALS_JSON:
@@ -70,11 +71,13 @@ def initialize_firebase():
         return firestore.client()
     except Exception as e:
         logger.error(f"Firebase ইনিশিয়ালাইজেশন ত্রুটি: {e}", exc_info=True)
+        # Firebase ইনিশিয়ালাইজেশন ব্যর্থ হলে, সার্ভার বন্ধ করে দিন
         sys.exit(1)
 
 try:
     db = initialize_firebase()
 except Exception:
+    # ডেভেলপমেন্ট এনভায়রনমেন্টে, ইনিশিয়ালাইজেশন ত্রুটি হলে শুধু সতর্কবার্তা দিন
     logger.warning("Firebase ক্লায়েন্ট লোড হতে পারেনি। ডিপ্লয়মেন্টের সময় এটি স্বয়ংক্রিয়ভাবে লোড হবে।")
 
 
@@ -85,9 +88,11 @@ async def is_admin(user_id: int) -> bool:
     try:
         # সুপার অ্যাডমিনকে স্বয়ংক্রিয়ভাবে অ্যাডমিন হিসেবে বিবেচনা করা হয়
         if str(user_id) == BOT_OWNER_ID:
+            # সুপার অ্যাডমিনকে নিশ্চিত করতে ডেটাবেসে যোগ করুন
             await add_admin(user_id, added_by='System/Owner') 
             return True
             
+        # অন্যথায়, Firestore থেকে চেক করুন
         doc = await db.collection(COLLECTION_ADMINS).document(str(user_id)).get()
         return doc.exists
     except Exception as e:
@@ -192,9 +197,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         
     elif data == 'action_export':
+        # এক্সপোর্ট অনুরোধ পাঠানো হয়েছে, ফলাফলের জন্য অপেক্ষা করা হচ্ছে
         await export_data_logic(user_id, context)
-        await query.edit_message_text("🗄️ এক্সপোর্ট অনুরোধ পাঠানো হয়েছে।", reply_markup=get_main_menu_keyboard())
-    
+        # সম্পাদনা করার দরকার নেই, কারণ ফলাফল আলাদা মেসেজে যাবে
+        
     elif data == 'action_admin_menu':
         await query.edit_message_text("অ্যাডমিন ম্যানেজমেন্ট মেনু:", reply_markup=get_admin_menu_keyboard())
 
@@ -213,6 +219,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     elif data == 'admin_list':
         await list_admins_logic(context, user_id)
+        # তালিকা মেসেজ হিসেবে পাঠানো হবে, তাই শুধু মেনু সম্পাদনা
         await query.edit_message_text("📜 অ্যাডমিন তালিকা পাঠানো হয়েছে।", reply_markup=get_admin_menu_keyboard())
         
 
@@ -293,6 +300,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def check_if_email_exists(email: str) -> bool:
     """ফায়ারবেসে ইমেইলটি আগে থেকে আছে কিনা তা পরীক্ষা করা।"""
     try:
+        # Firestore Get operations are usually synchronous in the official Python SDK, 
+        # but the environment seems to support 'await' on them.
         doc = await db.collection(COLLECTION_EMAILS).document(email.lower()).get()
         return doc.exists
     except Exception as e:
@@ -305,6 +314,7 @@ async def save_app_data(app_data: dict) -> bool:
         email_key = app_data.get('email', '').lower()
         if not email_key: return False
         
+        # Firestore Set operations are usually synchronous, but awaiting for consistency.
         await db.collection(COLLECTION_EMAILS).document(email_key).set(app_data)
         return True
     except Exception as e:
@@ -327,33 +337,35 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
         return
 
     newly_scraped_apps = []
-    max_installs_for_new = 100000 
-    max_days_old_for_new = 90      
+    # --- ফিক্স ১: ফিল্টার শিথিল করা হলো ---
+    max_installs_for_new = 500000 # ১ লক্ষ থেকে বাড়িয়ে ৫ লক্ষ করা হলো
+    max_days_old_for_new = 180    # ৯০ দিন থেকে বাড়িয়ে ১৮০ দিন (৬ মাস) করা হলো 
 
     for app in search_results:
-        # বেসিক শর্ত: ইমেইল এবং ৪.০ এর নিচে রেটিং
+        # ১. বেসিক শর্ত: ইমেইল থাকতে হবে এবং রেটিং ৪.০ এর নিচে হতে হবে
         if not app.get('developerEmail') or app.get('score', 5.0) >= 4.0:
             continue
         
-        # নতুনত্বের ফিল্টার: কম ডাউনলোড (১ লক্ষের নিচে)
+        # ২. নতুনত্বের ফিল্টার: কম ডাউনলোড 
         installs_str = app.get('installs', '0+').replace('+', '').replace(',', '')
         installs = int(installs_str) if installs_str.isdigit() else 999999
 
         if installs > max_installs_for_new:
             continue
         
-        # নতুনত্বের ফিল্টার: সাম্প্রতিক আপডেট (৯০ দিনের মধ্যে)
+        # ৩. নতুনত্বের ফিল্টার: সাম্প্রতিক আপডেট (১৮০ দিনের মধ্যে)
         try:
             updated_date_str = app.get('updated', '1970-01-01T00:00:00.000Z').split('T')[0]
             updated_date = datetime.strptime(updated_date_str, '%Y-%m-%d')
             if datetime.now() - updated_date > timedelta(days=max_days_old_for_new):
                 continue
         except Exception:
+            # তারিখ ফরমেট ভুল হলে বা না থাকলে, এটি বাদ দেওয়া হবে না
             pass
 
         app_email = app['developerEmail'].strip()
         
-        # ডুপ্লিকেট চেক ও সেভ
+        # ৪. ডুপ্লিকেট চেক ও সেভ
         if await check_if_email_exists(app_email):
             continue
 
@@ -397,7 +409,7 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
     else:
         await context.bot.send_message(
             target_chat,
-            f'❌ **{keyword}** কীওয়ার্ডের জন্য শর্তাবলী পূরণ করে এমন নতুন কোনো অ্যাপ খুঁজে পাওয়া যায়নি বা সব ডুপ্লিকেট ছিল।'
+            f'❌ **{keyword}** কীওয়ার্ডের জন্য শর্তাবলী পূরণ করে এমন নতুন কোনো অ্যাপ খুঁজে পাওয়া যায়নি বা সব ডুপ্লিকেট ছিল। (আপনার কঠোর শর্তাবলী বিবেচনা করুন: রেটিং < 4.0, ইনস্টল < 500k)'
         )
 
 async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -406,19 +418,26 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
     await context.bot.send_message(user_id, "🗄️ ডেটাবেস থেকে সংগৃহীত সকল ইমেইল এক্সপোর্ট করা হচ্ছে...")
     
     try:
-        # সমস্ত ডেটা সংগ্রহ করা হচ্ছে (performance improvement for large sets needed, but sufficient for now)
+        # --- ফিক্স ২: ডেটা আনার সঠিক পদ্ধতি ব্যবহার করা হলো (Synchronous stream) ---
         docs = db.collection(COLLECTION_EMAILS).stream()
         
-        all_data = []
-        async for doc in docs:
-            all_data.append(doc.to_dict())
+        # synchronous generator কে list comprehension এর মাধ্যমে ডেটাতে রূপান্তর করা
+        all_data = [doc.to_dict() for doc in docs]
 
         if all_data:
             total_count = len(all_data)
             csv_data = "Email Address,App Name,Rating,Installs,Keyword,Scraped Date\n"
             
             for data in all_data:
-                row = f'"{data.get("email", "")}", "{data.get("name", "")}", {data.get("score", 0):.2f}, "{data.get("installs", "")}", "{data.get("keyword", "")}", "{data.get("scraped_at", "")[:10]}"\n'
+                # CSV ফরম্যাটে ডেটা যোগ করা
+                row = (
+                    f'"{data.get("email", "")}", '
+                    f'"{data.get("name", "")}", '
+                    f'{data.get("score", 0):.2f}, '
+                    f'"{data.get("installs", "")}", '
+                    f'"{data.get("keyword", "")}", '
+                    f'"{data.get("scraped_at", "")[:10]}"\n'
+                )
                 csv_data += row
             
             # CSV ফাইল হিসাবে পাঠানো
@@ -442,8 +461,8 @@ async def list_admins_logic(context: ContextTypes.DEFAULT_TYPE, user_id: int) ->
         docs = db.collection(COLLECTION_ADMINS).stream()
         
         admin_list = []
-        async for doc in docs:
-            admin_list.append(doc.id)
+        # synchronous generator কে list comprehension এর মাধ্যমে ডেটাতে রূপান্তর করা
+        admin_list = [doc.id for doc in docs]
             
         if admin_list:
             message = "📜 **বর্তমান অ্যাডমিন তালিকা:**\n"
