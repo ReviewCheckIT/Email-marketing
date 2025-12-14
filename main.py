@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# -*- coding# -*- coding: utf-8 -*-
 # উন্নত প্লে স্টোর স্ক্র্যাপার বট: বাটন-ভিত্তিক ইন্টারফেস, অ্যাডমিন ম্যানেজমেন্ট, এবং ফায়ারবেস ইন্টিগ্রেশন।
 
 import logging
@@ -64,7 +64,7 @@ def initialize_firebase():
     try:
         cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
         cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
+        firebase_admin.initializeApp(cred)
         FIREBASE_INITIALIZED = True
         logger.info("Firebase সফলভাবে ইনিশিয়ালাইজ করা হয়েছে।")
         return firestore.client()
@@ -73,24 +73,21 @@ def initialize_firebase():
         sys.exit(1)
 
 try:
+    # ফায়ারবেস ক্লায়েন্ট ইনিশিয়ালাইজেশন
     db = initialize_firebase()
 except Exception:
     logger.warning("Firebase ক্লায়েন্ট লোড হতে পারেনি। ডিপ্লয়মেন্টের সময় এটি স্বয়ংক্রিয়ভাবে লোড হবে।")
 
 
-# --- অ্যাডমিন ম্যানেজমেন্ট লজিক ---
+# --- অ্যাডমিন ম্যানেজমেন্ট লজিক (Firebase await ফিক্সড, অপরিবর্তিত) ---
 
 async def is_admin(user_id: int) -> bool:
     """ব্যবহারকারী অ্যাডমিন কিনা তা Firestore থেকে পরীক্ষা করা। BOT_OWNER_ID-কে সুপার অ্যাডমিন হিসেবে গণ্য করা হয়।"""
     try:
-        # সুপার অ্যাডমিনকে স্বয়ংক্রিয়ভাবে অ্যাডমিন হিসেবে বিবেচনা করা হয়
         if str(user_id) == BOT_OWNER_ID:
-            # Note: add_admin is called here to ensure owner is in DB, but it's a synchronous call 
-            # wrapped in an async function, which is generally acceptable in PTB context.
             await add_admin(user_id, added_by='System/Owner') 
             return True
             
-        # ***ফিক্স: ফায়ারবেস গেট অপারেশনে 'await' অপসারণ করা হয়েছে***
         doc = db.collection(COLLECTION_ADMINS).document(str(user_id)).get()
         return doc.exists
     except Exception as e:
@@ -101,7 +98,6 @@ async def add_admin(user_id: int, added_by: str = None) -> bool:
     """Firestore-এ একজন অ্যাডমিন যুক্ত করা।"""
     try:
         admin_ref = db.collection(COLLECTION_ADMINS).document(str(user_id))
-        # ***ফিক্স: ফায়ারবেস সেট অপারেশনে 'await' অপসারণ করা হয়েছে***
         admin_ref.set({'user_id': user_id, 'added_by': added_by or 'Admin', 'added_at': datetime.now().isoformat()})
         return True
     except Exception as e:
@@ -111,10 +107,8 @@ async def add_admin(user_id: int, added_by: str = None) -> bool:
 async def remove_admin(user_id: int) -> bool:
     """Firestore থেকে একজন অ্যাডমিন অপসারণ করা।"""
     try:
-        # সুপার অ্যাডমিনকে অপসারণ করা যাবে না
         if str(user_id) == BOT_OWNER_ID:
             return False
-        # ***ফিক্স: ফায়ারবেস ডিলিট অপারেশনে 'await' অপসারণ করা হয়েছে***
         db.collection(COLLECTION_ADMINS).document(str(user_id)).delete()
         return True
     except Exception as e:
@@ -197,7 +191,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     elif data == 'action_export':
         await export_data_logic(user_id, context)
-        # এখানে এডিট না করে শুধু বাটন অ্যানসার করবে, এক্সপোর্ট মেসেজ আলাদা যাবে
         
     elif data == 'action_admin_menu':
         await query.edit_message_text("অ্যাডমিন ম্যানেজমেন্ট মেনু:", reply_markup=get_admin_menu_keyboard())
@@ -295,7 +288,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def check_if_email_exists(email: str) -> bool:
     """ফায়ারবেসে ইমেইলটি আগে থেকে আছে কিনা তা পরীক্ষা করা।"""
     try:
-        # ***ফিক্স: 'await' অপসারণ করা হয়েছে***
         doc = db.collection(COLLECTION_EMAILS).document(email.lower()).get()
         return doc.exists
     except Exception as e:
@@ -308,7 +300,6 @@ async def save_app_data(app_data: dict) -> bool:
         email_key = app_data.get('email', '').lower()
         if not email_key: return False
         
-        # ***ফিক্স: 'await' অপসারণ করা হয়েছে***
         db.collection(COLLECTION_EMAILS).document(email_key).set(app_data)
         return True
     except Exception as e:
@@ -325,56 +316,56 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
         return
 
     try:
+        # প্লে স্টোর সার্চ: কীওয়ার্ড এবং সংখ্যার ওপর ভিত্তি করে ডেটা আনা হবে
         search_results = play_search(keyword, lang='bn', country='us', n_hits=limit)
     except GooglePlayScraperException:
-        await context.bot.send_message(target_chat, f"❌ স্ক্র্যাপিং ত্রুটি: Play Store থেকে ডেটা আনা যায়নি। কীওয়ার্ড: **{keyword}**", parse_mode=ParseMode.MARKDOWN)
+        await context.bot.send_message(context.user_data['user_id'], f"❌ স্ক্র্যাপিং ত্রুটি: Play Store থেকে ডেটা আনা যায়নি। কীওয়ার্ড: **{keyword}**", parse_mode=ParseMode.MARKDOWN)
         return
 
     newly_scraped_apps = []
     
-    # --- ফিক্স ৩: ফিল্টার আরও শিথিল করা হলো ---
-    max_installs_for_new = 1000000 # ৫ লক্ষ থেকে বাড়িয়ে ১ মিলিয়ন (১০ লক্ষ) করা হলো
-    max_days_old_for_new = 180      
+    # --- নতুন অ্যাপের একমাত্র কঠোর শর্ত: খুবই সম্প্রতি আপডেট (৯০ দিন) ---
+    max_days_old_for_new = 90 # ৯০ দিন (৩ মাসের মধ্যে আপডেট)
 
     for app in search_results:
-        # ১. বেসিক শর্ত: ইমেইল থাকতে হবে এবং রেটিং ৪.০ এর নিচে হতে হবে
-        if not app.get('developerEmail') or app.get('score', 5.0) >= 4.0:
+        # ১. মৌলিক শর্ত: ডেভেলপার ইমেইল ঠিকানা অবশ্যই থাকতে হবে।
+        # দ্রষ্টব্য: এই ইমেইলটিই প্লে স্টোরে ডেভেলপার কন্টাক্ট হিসেবে তালিকাভুক্ত হয়।
+        if not app.get('developerEmail'):
             continue
         
-        # ২. নতুনত্বের ফিল্টার: কম ডাউনলোড 
-        installs_str = app.get('installs', '0+').replace('+', '').replace(',', '')
-        installs = int(installs_str) if installs_str.isdigit() else 999999
-
-        if installs > max_installs_for_new:
-            continue
-        
-        # ৩. নতুনত্বের ফিল্টার: সাম্প্রতিক আপডেট 
+        # ২. নতুনত্বের শর্ত: খুবই সাম্প্রতিক আপডেট (৯০ দিনের মধ্যে)
+        is_recently_updated = False
         try:
+            # updated তারিখটি YY-MM-DDT... ফরম্যাটে থাকে, শুধু তারিখ অংশ নেওয়া হচ্ছে
             updated_date_str = app.get('updated', '1970-01-01T00:00:00.000Z').split('T')[0]
             updated_date = datetime.strptime(updated_date_str, '%Y-%m-%d')
-            if datetime.now() - updated_date > timedelta(days=max_days_old_for_new):
-                continue
+            # বর্তমান সময় থেকে আপডেটের সময়ের ব্যবধান ৯০ দিনের কম হতে হবে
+            if datetime.now() - updated_date <= timedelta(days=max_days_old_for_new):
+                is_recently_updated = True
         except Exception:
+            # যদি তারিখ পড়তে না পারে, তবে সেটি বাদ যাবে (নিরাপত্তার জন্য)
             pass
+
+        if not is_recently_updated:
+            continue
 
         app_email = app['developerEmail'].strip()
         
-        # ৪. ডুপ্লিকেট চেক ও সেভ
-        # check_if_email_exists এর ভিতরে ফিক্স করা হয়েছে
+        # ৩. ডুপ্লিকেট চেক: ইমেইলটি আগে থেকে ডেটাবেসে থাকলে বাদ যাবে।
         if await check_if_email_exists(app_email):
             continue
 
+        # ৪. ডেটা সংরক্ষণ
         data_to_save = {
             'name': app['title'],
             'email': app_email,
-            'score': app.get('score', 0.0),
+            'score': app.get('score', 0.0), 
             'installs': app.get('installs', 'N/A'),
             'updated': app.get('updated', 'N/A'),
             'keyword': keyword,
             'scraped_at': datetime.now().isoformat()
         }
         
-        # save_app_data এর ভিতরে ফিক্স করা হয়েছে
         if await save_app_data(data_to_save):
             newly_scraped_apps.append(data_to_save)
 
@@ -382,7 +373,7 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
     if newly_scraped_apps:
         message_parts = [
             f'✨ **নতুন ফলাফল: {keyword}** (🔍 পরীক্ষা করা হয়েছে: {limit}টি অ্যাপ)',
-            f'✅ **{len(newly_scraped_apps)}টি** নতুন অ্যাপের ইমেইল সংগৃহীত ও ডেটাবেসে সংরক্ষণ করা হয়েছে।',
+            f'✅ **{len(newly_scraped_apps)}টি** নতুন (অনন্য ডেভেলপার ইমেইল সহ) অ্যাপের ইমেইল সংগৃহীত ও ডেটাবেসে সংরক্ষণ করা হয়েছে।',
             '---'
         ]
         
@@ -390,14 +381,16 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
             message_parts.append(
                 f'🔗 নাম: **{app["name"]}**\n'
                 f'⭐ রেটিং: {app["score"]:.2f} | ⬇️ ইনস্টল: {app["installs"]}\n'
-                f'📧 সাপোর্ট ইমেইল: `{app["email"]}`\n'
+                f'📧 ডেভেলপার ইমেইল: `{app["email"]}`\n'
                 '---'
             )
         
         final_message = "\n".join(message_parts)
         
         try:
+            # নিশ্চিত করা হলো: ফলাফল টার্গেট চ্যাটে (গ্রুপ/চ্যানেল) যাচ্ছে।
             await context.bot.send_message(chat_id=target_chat, text=final_message, parse_mode=ParseMode.MARKDOWN)
+            await context.bot.send_message(context.user_data['user_id'], f'✅ ফলাফল সফলভাবে টার্গেট চ্যাটে পাঠানো হয়েছে।')
         except Exception as e:
             logger.error(f"টার্গেট চ্যাটে মেসেজ পাঠানোর ত্রুটি: {e}")
             await context.bot.send_message(context.user_data['user_id'], f"❌ ফলাফল প্রাইভেট গ্রুপে পাঠানো যায়নি। অনুগ্রহ করে `TARGET_CHAT_ID` এবং বটের পারমিশন যাচাই করুন। ত্রুটি: {e}")
@@ -405,7 +398,7 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
     else:
         await context.bot.send_message(
             context.user_data['user_id'], # ব্যক্তিগত চ্যাটে ফলাফল পাঠানো
-            f'❌ **{keyword}** কীওয়ার্ডের জন্য শর্তাবলী পূরণ করে এমন নতুন কোনো অ্যাপ খুঁজে পাওয়া যায়নি বা সব ডুপ্লিকেট ছিল। (শর্তাবলী: রেটিং < 4.0, ইনস্টল < 1M, আপডেট < 180 দিন)'
+            f'❌ **{keyword}** কীওয়ার্ডের জন্য শর্তাবলী পূরণ করে এমন কোনো নতুন (অনন্য ডেভেলপার ইমেইল সহ) অ্যাপ খুঁজে পাওয়া যায়নি।\n(একমাত্র শর্তাবলী: ইমেইল থাকতে হবে এবং গত ৯০ দিনের মধ্যে আপডেট হতে হবে)।'
         )
 
 async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -414,10 +407,8 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
     await context.bot.send_message(user_id, "🗄️ ডেটাবেস থেকে সংগৃহীত সকল ইমেইল এক্সপোর্ট করা হচ্ছে...")
     
     try:
-        # ***ফিক্স: 'await' অপসারণ করা হয়েছে***
         docs = db.collection(COLLECTION_EMAILS).stream()
         
-        # synchronous generator কে list comprehension এর মাধ্যমে ডেটাতে রূপান্তর করা
         all_data = [doc.to_dict() for doc in docs]
 
         if all_data:
@@ -435,7 +426,6 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 csv_data += row
             
-            # CSV ফাইল হিসাবে পাঠানো
             await context.bot.send_document(
                 chat_id=user_id,
                 document=csv_data.encode('utf-8'),
@@ -453,10 +443,8 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
 async def list_admins_logic(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """সকল অ্যাডমিনের তালিকা দেখানো।"""
     try:
-        # ***ফিক্স: 'await' অপসারণ করা হয়েছে***
         docs = db.collection(COLLECTION_ADMINS).stream()
         
-        # synchronous generator কে list comprehension এর মাধ্যমে ডেটাতে রূপান্তর করা
         admin_list = [doc.id for doc in docs]
             
         if admin_list:
