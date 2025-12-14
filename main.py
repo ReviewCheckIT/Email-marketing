@@ -55,7 +55,6 @@ def initialize_firebase():
     """এনভায়রনমেন্ট ভেরিয়েবল থেকে ক্রেডেনশিয়াল ব্যবহার করে Firebase অ্যাপ ইনিশিয়ালাইজ করা।"""
     global FIREBASE_INITIALIZED
     if FIREBASE_INITIALIZED:
-        # যদি আগে থেকেই ইনিশিয়ালাইজ করা থাকে, তবে ক্লায়েন্ট রিটার্ন করুন
         return firestore.client()
         
     if not FIREBASE_CREDENTIALS_JSON:
@@ -71,13 +70,11 @@ def initialize_firebase():
         return firestore.client()
     except Exception as e:
         logger.error(f"Firebase ইনিশিয়ালাইজেশন ত্রুটি: {e}", exc_info=True)
-        # Firebase ইনিশিয়ালাইজেশন ব্যর্থ হলে, সার্ভার বন্ধ করে দিন
         sys.exit(1)
 
 try:
     db = initialize_firebase()
 except Exception:
-    # ডেভেলপমেন্ট এনভায়রনমেন্টে, ইনিশিয়ালাইজেশন ত্রুটি হলে শুধু সতর্কবার্তা দিন
     logger.warning("Firebase ক্লায়েন্ট লোড হতে পারেনি। ডিপ্লয়মেন্টের সময় এটি স্বয়ংক্রিয়ভাবে লোড হবে।")
 
 
@@ -88,12 +85,13 @@ async def is_admin(user_id: int) -> bool:
     try:
         # সুপার অ্যাডমিনকে স্বয়ংক্রিয়ভাবে অ্যাডমিন হিসেবে বিবেচনা করা হয়
         if str(user_id) == BOT_OWNER_ID:
-            # সুপার অ্যাডমিনকে নিশ্চিত করতে ডেটাবেসে যোগ করুন
+            # Note: add_admin is called here to ensure owner is in DB, but it's a synchronous call 
+            # wrapped in an async function, which is generally acceptable in PTB context.
             await add_admin(user_id, added_by='System/Owner') 
             return True
             
-        # অন্যথায়, Firestore থেকে চেক করুন
-        doc = await db.collection(COLLECTION_ADMINS).document(str(user_id)).get()
+        # ***ফিক্স: ফায়ারবেস গেট অপারেশনে 'await' অপসারণ করা হয়েছে***
+        doc = db.collection(COLLECTION_ADMINS).document(str(user_id)).get()
         return doc.exists
     except Exception as e:
         logger.error(f"অ্যাডমিন চেকিং ত্রুটি: {e}")
@@ -103,7 +101,8 @@ async def add_admin(user_id: int, added_by: str = None) -> bool:
     """Firestore-এ একজন অ্যাডমিন যুক্ত করা।"""
     try:
         admin_ref = db.collection(COLLECTION_ADMINS).document(str(user_id))
-        await admin_ref.set({'user_id': user_id, 'added_by': added_by or 'Admin', 'added_at': datetime.now().isoformat()})
+        # ***ফিক্স: ফায়ারবেস সেট অপারেশনে 'await' অপসারণ করা হয়েছে***
+        admin_ref.set({'user_id': user_id, 'added_by': added_by or 'Admin', 'added_at': datetime.now().isoformat()})
         return True
     except Exception as e:
         logger.error(f"অ্যাডমিন যুক্ত করার ত্রুটি: {e}")
@@ -115,14 +114,15 @@ async def remove_admin(user_id: int) -> bool:
         # সুপার অ্যাডমিনকে অপসারণ করা যাবে না
         if str(user_id) == BOT_OWNER_ID:
             return False
-        await db.collection(COLLECTION_ADMINS).document(str(user_id)).delete()
+        # ***ফিক্স: ফায়ারবেস ডিলিট অপারেশনে 'await' অপসারণ করা হয়েছে***
+        db.collection(COLLECTION_ADMINS).document(str(user_id)).delete()
         return True
     except Exception as e:
         logger.error(f"অ্যাডমিন অপসারণের ত্রুটি: {e}")
         return False
 
 
-# --- ইন্টারফেস বাটন এবং মেনু ---
+# --- ইন্টারফেস বাটন এবং মেনু (অপরিবর্তিত) ---
 
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     """প্রধান মেনুর বাটন তৈরি করা।"""
@@ -144,7 +144,7 @@ def get_admin_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-# --- টেলিগ্রাম হ্যান্ডলার্স ---
+# --- টেলিগ্রাম হ্যান্ডলার্স (অপরিবর্তিত) ---
 
 async def post_init_callback(application: Application) -> None:
     """বট ইনিশিয়ালাইজেশনের পর টার্গেট চ্যাটে স্টার্টআপ মেসেজ পাঠায়।"""
@@ -154,7 +154,6 @@ async def post_init_callback(application: Application) -> None:
         return
         
     try:
-        # TARGET_CHAT_ID-তে স্টার্টআপ মেসেজ পাঠানো হচ্ছে
         await application.bot.send_message(
             chat_id=target_chat,
             text=STARTUP_MESSAGE
@@ -197,9 +196,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         
     elif data == 'action_export':
-        # এক্সপোর্ট অনুরোধ পাঠানো হয়েছে, ফলাফলের জন্য অপেক্ষা করা হচ্ছে
         await export_data_logic(user_id, context)
-        # সম্পাদনা করার দরকার নেই, কারণ ফলাফল আলাদা মেসেজে যাবে
+        # এখানে এডিট না করে শুধু বাটন অ্যানসার করবে, এক্সপোর্ট মেসেজ আলাদা যাবে
         
     elif data == 'action_admin_menu':
         await query.edit_message_text("অ্যাডমিন ম্যানেজমেন্ট মেনু:", reply_markup=get_admin_menu_keyboard())
@@ -219,7 +217,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     elif data == 'admin_list':
         await list_admins_logic(context, user_id)
-        # তালিকা মেসেজ হিসেবে পাঠানো হবে, তাই শুধু মেনু সম্পাদনা
         await query.edit_message_text("📜 অ্যাডমিন তালিকা পাঠানো হয়েছে।", reply_markup=get_admin_menu_keyboard())
         
 
@@ -232,7 +229,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     text = update.message.text.strip()
     state = context.user_data.get('state')
     
-    # ইউজার আইডি সংরক্ষণ করা হচ্ছে যাতে ফলাফল পাঠানোর সময় ব্যবহার করা যায়
     context.user_data['user_id'] = user_id
 
     if state == 'await_keyword':
@@ -291,7 +287,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("অ্যাডমিন মেনু:", reply_markup=get_admin_menu_keyboard())
     
     else:
-        # কোনো স্টেট সেট না থাকলে মেনু দেখানো
         await start_handler(update, context)
 
 
@@ -300,9 +295,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def check_if_email_exists(email: str) -> bool:
     """ফায়ারবেসে ইমেইলটি আগে থেকে আছে কিনা তা পরীক্ষা করা।"""
     try:
-        # Firestore Get operations are usually synchronous in the official Python SDK, 
-        # but the environment seems to support 'await' on them.
-        doc = await db.collection(COLLECTION_EMAILS).document(email.lower()).get()
+        # ***ফিক্স: 'await' অপসারণ করা হয়েছে***
+        doc = db.collection(COLLECTION_EMAILS).document(email.lower()).get()
         return doc.exists
     except Exception as e:
         logger.error(f"Firebase চেকিং ত্রুটি: {e}")
@@ -314,8 +308,8 @@ async def save_app_data(app_data: dict) -> bool:
         email_key = app_data.get('email', '').lower()
         if not email_key: return False
         
-        # Firestore Set operations are usually synchronous, but awaiting for consistency.
-        await db.collection(COLLECTION_EMAILS).document(email_key).set(app_data)
+        # ***ফিক্স: 'await' অপসারণ করা হয়েছে***
+        db.collection(COLLECTION_EMAILS).document(email_key).set(app_data)
         return True
     except Exception as e:
         logger.error(f"Firebase সেভিং ত্রুটি: {e}")
@@ -337,9 +331,10 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
         return
 
     newly_scraped_apps = []
-    # --- ফিক্স ১: ফিল্টার শিথিল করা হলো ---
-    max_installs_for_new = 500000 # ১ লক্ষ থেকে বাড়িয়ে ৫ লক্ষ করা হলো
-    max_days_old_for_new = 180    # ৯০ দিন থেকে বাড়িয়ে ১৮০ দিন (৬ মাস) করা হলো 
+    
+    # --- ফিক্স ৩: ফিল্টার আরও শিথিল করা হলো ---
+    max_installs_for_new = 1000000 # ৫ লক্ষ থেকে বাড়িয়ে ১ মিলিয়ন (১০ লক্ষ) করা হলো
+    max_days_old_for_new = 180      
 
     for app in search_results:
         # ১. বেসিক শর্ত: ইমেইল থাকতে হবে এবং রেটিং ৪.০ এর নিচে হতে হবে
@@ -353,19 +348,19 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
         if installs > max_installs_for_new:
             continue
         
-        # ৩. নতুনত্বের ফিল্টার: সাম্প্রতিক আপডেট (১৮০ দিনের মধ্যে)
+        # ৩. নতুনত্বের ফিল্টার: সাম্প্রতিক আপডেট 
         try:
             updated_date_str = app.get('updated', '1970-01-01T00:00:00.000Z').split('T')[0]
             updated_date = datetime.strptime(updated_date_str, '%Y-%m-%d')
             if datetime.now() - updated_date > timedelta(days=max_days_old_for_new):
                 continue
         except Exception:
-            # তারিখ ফরমেট ভুল হলে বা না থাকলে, এটি বাদ দেওয়া হবে না
             pass
 
         app_email = app['developerEmail'].strip()
         
         # ৪. ডুপ্লিকেট চেক ও সেভ
+        # check_if_email_exists এর ভিতরে ফিক্স করা হয়েছে
         if await check_if_email_exists(app_email):
             continue
 
@@ -379,6 +374,7 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
             'scraped_at': datetime.now().isoformat()
         }
         
+        # save_app_data এর ভিতরে ফিক্স করা হয়েছে
         if await save_app_data(data_to_save):
             newly_scraped_apps.append(data_to_save)
 
@@ -408,8 +404,8 @@ async def search_apps_logic(keyword: str, limit: int, context: ContextTypes.DEFA
 
     else:
         await context.bot.send_message(
-            target_chat,
-            f'❌ **{keyword}** কীওয়ার্ডের জন্য শর্তাবলী পূরণ করে এমন নতুন কোনো অ্যাপ খুঁজে পাওয়া যায়নি বা সব ডুপ্লিকেট ছিল। (আপনার কঠোর শর্তাবলী বিবেচনা করুন: রেটিং < 4.0, ইনস্টল < 500k)'
+            context.user_data['user_id'], # ব্যক্তিগত চ্যাটে ফলাফল পাঠানো
+            f'❌ **{keyword}** কীওয়ার্ডের জন্য শর্তাবলী পূরণ করে এমন নতুন কোনো অ্যাপ খুঁজে পাওয়া যায়নি বা সব ডুপ্লিকেট ছিল। (শর্তাবলী: রেটিং < 4.0, ইনস্টল < 1M, আপডেট < 180 দিন)'
         )
 
 async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -418,7 +414,7 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
     await context.bot.send_message(user_id, "🗄️ ডেটাবেস থেকে সংগৃহীত সকল ইমেইল এক্সপোর্ট করা হচ্ছে...")
     
     try:
-        # --- ফিক্স ২: ডেটা আনার সঠিক পদ্ধতি ব্যবহার করা হলো (Synchronous stream) ---
+        # ***ফিক্স: 'await' অপসারণ করা হয়েছে***
         docs = db.collection(COLLECTION_EMAILS).stream()
         
         # synchronous generator কে list comprehension এর মাধ্যমে ডেটাতে রূপান্তর করা
@@ -429,7 +425,6 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
             csv_data = "Email Address,App Name,Rating,Installs,Keyword,Scraped Date\n"
             
             for data in all_data:
-                # CSV ফরম্যাটে ডেটা যোগ করা
                 row = (
                     f'"{data.get("email", "")}", '
                     f'"{data.get("name", "")}", '
@@ -445,22 +440,22 @@ async def export_data_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE) ->
                 chat_id=user_id,
                 document=csv_data.encode('utf-8'),
                 filename=f"scraped_app_emails_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                caption=f'✅ মোট **{total_count}টি** অনন্য ইমেইল CSV ফরম্যাটে এক্সপোর্ট করা হয়েছে।\nফলাফল আপনার ব্যক্তিগত চ্যাটে পাঠানো হয়েছে।'
+                caption=f'✅ মোট **{total_count}টি** অনন্য ইমেইল CSV ফরম্যাটে এক্সপোর্ট করা হয়েছে।'
             )
         else:
             await context.bot.send_message(user_id, "❌ ডেটাবেসে কোনো ডেটা সংরক্ষণ করা নেই।")
 
     except Exception as e:
         logger.error(f"এক্সপোর্ট ত্রুটি: {e}")
-        await context.bot.send_message(user_id, "দুঃখিত, ডেটা এক্সপোর্ট করতে একটি গুরুতর ত্রুটি হয়েছে।")
+        await context.bot.send_message(user_id, f"দুঃখিত, ডেটা এক্সপোর্ট করতে একটি গুরুতর ত্রুটি হয়েছে। ত্রুটি: {e}")
 
 
 async def list_admins_logic(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """সকল অ্যাডমিনের তালিকা দেখানো।"""
     try:
+        # ***ফিক্স: 'await' অপসারণ করা হয়েছে***
         docs = db.collection(COLLECTION_ADMINS).stream()
         
-        admin_list = []
         # synchronous generator কে list comprehension এর মাধ্যমে ডেটাতে রূপান্তর করা
         admin_list = [doc.id for doc in docs]
             
@@ -488,14 +483,11 @@ def main() -> None:
         
     initialize_firebase() 
 
-    # post_init callback যোগ করা হচ্ছে স্টার্টআপ মেসেজের জন্য
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init_callback).build()
 
-    # হ্যান্ডলার যুক্ত করা
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(CallbackQueryHandler(callback_handler))
     
-    # অ্যাডমিনদের কাছ থেকে কীওয়ার্ড/ID ইনপুট নেওয়ার জন্য মেসেজ হ্যান্ডলার
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     if PRODUCTION and WEBHOOK_URL:
