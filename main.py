@@ -42,22 +42,6 @@ async def perform_search(bot):
     if not current_keyword:
         return
     try:
-        # Search Play Store for apps matching keyword, sorted by new
-        result = reviews(
-            'com.android.vending',  # Dummy, but we use search function separately
-            lang='en', country='us', sort=Sort.NEWEST, count=50
-        )
-        # Actually, google-play-scraper has no direct search, so we simulate with app details loop.
-        # For real search, we need to use a list of app IDs or external search, but to keep free, we'll assume keyword in title/description.
-        # Better: Use search function if available, but library has app() for details.
-        # To search: We can hardcode or use a list, but for simplicity, assume user provides keyword, and we fetch top new apps and filter.
-        
-        # Improved: Fetch top new apps and filter by keyword and rating <4
-        # Note: google-play-scraper doesn't have direct 'search', so we'll fetch collections or use external.
-        # For free, let's use a workaround: Fetch similar apps or predefined.
-        # Actual implementation: Use the 'search' function from library if exists, but it doesn't. So use web scrape or limit.
-        # Library has 'search' function! Yes, from google_play_scraper import search
-        
         from google_play_scraper import search
         search_results = search(current_keyword, lang="en", country="us", n_hits=20)
         
