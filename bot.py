@@ -1,8 +1,8 @@
 import os
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
-from google_play_scraper import Sort, reviews, app
+from telegram.ext import Application, CommandHandler, CallbackContext
+from google_play_scraper import Sort, app, search  # reviews removed as not used
 import schedule
 import time
 import threading
@@ -26,7 +26,7 @@ async def start(update: Update, context: CallbackContext):
         return
     await update.message.reply_text("Bot started! Use /search <keyword> to set search term.")
 
-async def search(update: Update, context: CallbackContext):
+async def search_command(update: Update, context: CallbackContext):  # Renamed to avoid conflict
     global current_keyword
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("You are not authorized.")
@@ -42,9 +42,8 @@ async def perform_search(bot):
     if not current_keyword:
         return
     try:
-        from google_play_scraper import search
         search_results = search(current_keyword, lang="en", country="us", n_hits=20)
-        
+
         emails = []
         for res in search_results:
             app_id = res['appId']
@@ -61,7 +60,7 @@ async def perform_search(bot):
                     searched_apps.add(app_id)
             except Exception as e:
                 logger.error(f"Error fetching {app_id}: {e}")
-        
+
         if emails:
             message = "New support emails found:\n\n" + "\n\n".join(emails)
             await bot.send_message(chat_id=CHAT_ID, text=message)
@@ -79,14 +78,14 @@ def run_scheduler(bot):
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
-    
+
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("search", search))
-    
+    application.add_handler(CommandHandler("search", search_command))  # Renamed handler
+
     # Run scheduler in background
     scheduler_thread = threading.Thread(target=run_scheduler, args=(application.bot,))
     scheduler_thread.start()
-    
+
     application.run_polling()
 
 if __name__ == '__main__':
