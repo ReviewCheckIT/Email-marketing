@@ -1,140 +1,249 @@
+# -*- coding: utf-8 -*-
+# Advanced Play Store Scraper Bot (Production Ready)
+# Deploy Target: Render.com
+# Secrets Management: Environment Variables
+
+import logging
 import os
+import sys
+import json
 import asyncio
-import threading
-from flask import Flask
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
-from google_play_scraper import search, app as play_store_app
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+from google_play_scraper import search as play_search
+from google_play_scraper.exceptions import GooglePlayScraperException
+import google.generativeai as genai
 
-# ---------------------------------------------------------
-# কনফিগারেশন এবং এনভায়রনমেন্ট ভেরিয়েবল
-# ---------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = os.getenv("ADMIN_ID")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+# --- Firebase Import ---
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    FIREBASE_INITIALIZED = False
+except ImportError:
+    logging.error("Firebase libraries not found. Please install 'firebase-admin'.")
+    sys.exit(1)
 
-if not BOT_TOKEN or not ADMIN_ID or not CHANNEL_ID:
-    print("Error: Environment variables are missing! Check Render config.")
+# --- Environment Variables (Load from Render) ---
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TARGET_CHAT_ID = os.environ.get('TARGET_CHAT_ID') # Group ID to send leads
+BOT_OWNER_ID = os.environ.get('BOT_OWNER_ID')     # Your Telegram ID
+FIREBASE_CREDENTIALS_JSON = os.environ.get('FIREBASE_CREDENTIALS_JSON') # Full JSON string
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY') # AI Key
 
-# ---------------------------------------------------------
-# Render.com এর জন্য ফ্লাস্ক সার্ভার
-# ---------------------------------------------------------
-app = Flask(__name__)
+# Webhook Config for Render
+WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL') # Render automatically sets this usually, or set manually
+PORT = int(os.environ.get('PORT', '8080'))
 
-@app.route('/')
-def home():
-    return "Bot is running on Render!"
+# Logging Setup
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-def run_flask():
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+# Constants
+COLLECTION_EMAILS = 'scraped_app_emails'
+COLLECTION_ADMINS = 'admins'
 
-# ---------------------------------------------------------
-# প্লে স্টোর স্ক্র্যাপিং ফাংশন (লিংক ছাড়া, শুধু ইমেইল)
-# ---------------------------------------------------------
-def scrape_emails(keyword):
-    results_list = []
+# --- Firebase Initialization ---
+def initialize_firebase():
+    global FIREBASE_INITIALIZED, db
+    if FIREBASE_INITIALIZED: return
+        
+    if not FIREBASE_CREDENTIALS_JSON:
+        logger.critical("❌ FIREBASE_CREDENTIALS_JSON is missing in Environment Variables!")
+        sys.exit(1)
+        
     try:
-        # ১. কিওয়ার্ড দিয়ে সার্চ করা (প্রথম ২০টি অ্যাপ)
-        search_results = search(
-            keyword,
-            lang='en',
-            country='us',
-            n_hits=20
-        )
-
-        for result in search_results:
-            app_id = result['appId']
-            
-            # ২. প্রতিটি অ্যাপের বিস্তারিত তথ্য বের করা
-            details = play_store_app(app_id)
-            
-            app_title = details.get('title', 'Unknown')
-            support_email = details.get('developerEmail')
-            rating = details.get('score', 0)
-            
-            # ৩. ফিল্টারিং লজিক:
-            # - সাপোর্ট ইমেইল থাকতে হবে
-            # - রেটিং ৪ এর নিচে হতে হবে অথবা নতুন অ্যাপ (রেটিং নেই)
-            if support_email:
-                if rating is None or rating < 4.0:
-                    # লিংক বাদ দেওয়া হয়েছে, শুধু ইমেইল এবং অ্যাপের নাম রাখা হয়েছে
-                    info = (
-                        f"📧 `{support_email}`\n"
-                        f"📱 App: {app_title} ({rating if rating else 'New'})"
-                    )
-                    results_list.append(info)
-                    
+        # Load JSON from string (Render Env Var)
+        cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        FIREBASE_INITIALIZED = True
+        logger.info("🔥 Firebase Connected Successfully!")
     except Exception as e:
-        print(f"Scraping Error: {e}")
-        return None
+        logger.error(f"Firebase Init Error: {e}", exc_info=True)
+        sys.exit(1)
 
-    return results_list
+# Initialize Firebase immediately
+initialize_firebase()
 
-# ---------------------------------------------------------
-# টেলিগ্রাম বট লজিক
-# ---------------------------------------------------------
+# --- AI Logic (Gemini) ---
+def get_ai_keywords(base_keyword: str) -> list:
+    """Generates targeted search queries for NEW apps using Gemini AI."""
+    if not GEMINI_API_KEY:
+        logger.warning("Gemini API Key missing. Using basic search.")
+        return [base_keyword]
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if user_id != str(ADMIN_ID):
-        await update.message.reply_text("⛔ আপনি এই বটের এডমিন নন।")
-        return
-    
-    await update.message.reply_text(
-        "👋 হ্যালো এডমিন!\n\n"
-        "আমাকে কিওয়ার্ড দিন (যেমন: `loan app`, `vpn`)।\n"
-        "আমি ৪ স্টারের নিচের অ্যাপগুলোর **সাপোর্ট ইমেইল** বের করে গ্রুপে পাঠিয়ে দেব।"
-    )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    
-    if user_id != str(ADMIN_ID):
-        return
-
-    keyword = update.message.text
-    status_msg = await update.message.reply_text(f"🔍 '{keyword}' এর ইমেইল খোঁজা হচ্ছে...")
-
-    # স্ক্র্যাপিং শুরু
-    loop = asyncio.get_running_loop()
-    results = await loop.run_in_executor(None, scrape_emails, keyword)
-
-    if results is None:
-        await status_msg.edit_text("❌ সার্চ করার সময় সমস্যা হয়েছে।")
-    elif not results:
-        await status_msg.edit_text("⚠️ কোনো উপযুক্ত ইমেইল পাওয়া যায়নি (৪ স্টারের নিচে)।")
-    else:
-        await status_msg.edit_text(f"✅ {len(results)} টি ইমেইল পাওয়া গেছে। গ্রুপে পাঠানো হচ্ছে...")
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # প্রাইভেট চ্যানেলে রেজাল্ট পাঠানো
-        for info in results:
+        prompt = (
+            f"Generate 6 specific Play Store search terms related to '{base_keyword}'. "
+            "Focus on finding NEWLY RELEASED apps, Indie apps, or apps with low competition. "
+            "Keywords should help find apps that likely have 0 ratings or low downloads. "
+            "Output format: Comma separated string only. Example: New {base_keyword} 2025, Simple {base_keyword}."
+        )
+        
+        response = model.generate_content(prompt)
+        keywords = [k.strip() for k in response.text.split(',') if k.strip()]
+        keywords.insert(0, base_keyword) # Add original keyword
+        return keywords[:7] # Limit to 7 queries
+    except Exception as e:
+        logger.error(f"AI Error: {e}")
+        return [base_keyword]
+
+# --- Database Helpers ---
+async def is_admin(user_id: int) -> bool:
+    if str(user_id) == str(BOT_OWNER_ID): return True
+    doc = db.collection(COLLECTION_ADMINS).document(str(user_id)).get()
+    return doc.exists
+
+async def check_if_email_exists(email: str) -> bool:
+    doc = db.collection(COLLECTION_EMAILS).document(email.lower()).get()
+    return doc.exists
+
+# --- Bot Handlers ---
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await is_admin(update.effective_user.id): return
+    
+    keyboard = [
+        [InlineKeyboardButton("🚀 AI Smart Search (New Apps)", callback_data='start_search')],
+        [InlineKeyboardButton("📂 Export CSV", callback_data='export_data')],
+        [InlineKeyboardButton("⚙️ Admin Panel", callback_data='admin_panel')]
+    ]
+    await update.message.reply_text("🤖 **Advanced Scraper Bot Ready!**\nSelect an action:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'start_search':
+        context.user_data['state'] = 'await_keyword'
+        await query.edit_message_text("🔍 **Enter a Topic/Keyword:**\n(AI will expand this to find hidden/new apps)")
+    
+    elif query.data == 'export_data':
+        await export_logic(update.effective_user.id, context)
+        
+    elif query.data == 'admin_panel':
+        await query.edit_message_text("Feature coming soon: Add/Remove admins via chat.")
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not await is_admin(user_id): return
+    
+    state = context.user_data.get('state')
+    text = update.message.text.strip()
+    
+    if state == 'await_keyword':
+        context.user_data['keyword'] = text
+        context.user_data['state'] = None
+        
+        await update.message.reply_text(f"🧠 AI Processing: **{text}**... Please wait.")
+        asyncio.create_task(run_smart_search(text, context, user_id))
+
+# --- Core Search Logic ---
+async def run_smart_search(base_keyword: str, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    # 1. Get AI Keywords
+    keywords = get_ai_keywords(base_keyword)
+    status_msg = await context.bot.send_message(user_id, f"📝 **Scanning Keywords:**\n" + ", ".join(keywords))
+    
+    new_leads = []
+    
+    for kw in keywords:
+        try:
+            # Search logic
+            results = play_search(kw, lang='en', country='us', n_hits=60)
+            
+            for app in results:
+                email = app.get('developerEmail')
+                score = app.get('score')
+                
+                # STRICT FILTERS for NEW/STRUGGLING APPS
+                # Target: No Rating (New) OR Rating <= 3.7 (Needs help)
+                is_target = (score is None) or (score == 0) or (score <= 3.7)
+                
+                if email and is_target:
+                    clean_email = email.strip().lower()
+                    
+                    # Duplicate Check
+                    if not await check_if_email_exists(clean_email):
+                        data = {
+                            'name': app['title'],
+                            'email': clean_email,
+                            'score': score if score else 0.0,
+                            'installs': app.get('installs'),
+                            'keyword': kw,
+                            'scraped_at': datetime.now().isoformat()
+                        }
+                        # Save to Firebase
+                        db.collection(COLLECTION_EMAILS).document(clean_email).set(data)
+                        new_leads.append(data)
+                        
+        except Exception as e:
+            logger.error(f"Search error for {kw}: {e}")
+            
+    # Reporting
+    if new_leads:
+        report = f"✅ **Mission Success!**\nTopic: {base_keyword}\n🆕 New Unique Leads: {len(new_leads)}\n\n"
+        for lead in new_leads[:10]:
+            report += f"📱 {lead['name']} ({lead['score'] or 'New'})\n📧 `{lead['email']}`\n\n"
+        
+        if len(new_leads) > 10: report += f"...and {len(new_leads)-10} more saved to database."
+        
+        # Send to Admin
+        await context.bot.send_message(user_id, report, parse_mode=ParseMode.MARKDOWN)
+        
+        # Send to Channel if Configured
+        if TARGET_CHAT_ID:
             try:
-                await context.bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=info,
-                    parse_mode='Markdown'
-                )
-                await asyncio.sleep(1) # ফ্লাডিং আটকাতে বিরতি
+                await context.bot.send_message(TARGET_CHAT_ID, report, parse_mode=ParseMode.MARKDOWN)
             except Exception as e:
-                print(f"Sending Error: {e}")
+                logger.error(f"Channel send failed: {e}")
+    else:
+        await context.bot.send_message(user_id, f"⚠️ No NEW unique apps found for '{base_keyword}'. Try a different niche.")
+
+async def export_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    docs = db.collection(COLLECTION_EMAILS).stream()
+    csv_data = "Email,App Name,Rating,Installs,Source\n"
+    count = 0
+    for doc in docs:
+        d = doc.to_dict()
+        csv_data += f"{d.get('email')},{d.get('name').replace(',', '')},{d.get('score')},{d.get('installs')},{d.get('keyword')}\n"
+        count += 1
         
-        await update.message.reply_text("🚀 সব ইমেইল পাঠানো শেষ!")
+    if count > 0:
+        await context.bot.send_document(user_id, document=csv_data.encode(), filename="leads.csv", caption=f"📊 Total Leads: {count}")
+    else:
+        await context.bot.send_message(user_id, "Database is empty.")
 
-# ---------------------------------------------------------
-# মেইন ফাংশন
-# ---------------------------------------------------------
-def main():
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
+# --- Main Execution ---
+def main() -> None:
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN missing!")
+        sys.exit(1)
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    print("Bot is polling...")
-    application.run_polling()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-if __name__ == '__main__':
+    application.add_handler(CommandHandler("start", start_handler))
+    application.add_handler(CallbackQueryHandler(callback_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    # Render Webhook Logic
+    if WEBHOOK_URL:
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=TELEGRAM_BOT_TOKEN,
+            webhook_url=f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}" if not WEBHOOK_URL.endswith(TELEGRAM_BOT_TOKEN) else WEBHOOK_URL
+        )
+    else:
+        # Fallback to polling for local testing
+        application.run_polling()
+
+if __name__ == "__main__":
     main()
