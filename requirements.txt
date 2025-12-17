@@ -1,4 +1,4 @@
-python-telegram-bot
+python-telegram-bot[webhooks] # ✅ Corrected: Includes necessary dependencies for webhook
 google-play-scraper
 firebase-admin
-google-genai # UPDATED: New library for Gemini
+google-genai
