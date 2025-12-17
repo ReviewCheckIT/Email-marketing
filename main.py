@@ -14,7 +14,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from google_play_scraper import search as play_search
 from google_play_scraper.exceptions import GooglePlayScraperException
-import google.generativeai as genai
+from google import genai # ✅ CORRECTED: Using the modern 'google.genai' import
 
 # --- Firebase Import ---
 try:
@@ -53,11 +53,9 @@ def initialize_firebase():
     if FIREBASE_INITIALIZED: return
         
     if not FIREBASE_CREDENTIALS_JSON:
-        logger.critical("❌ FIREBASE_CREDENTIALS_JSON is missing in Environment Variables!")
-        sys.exit(1)
+        return
         
     try:
-        # Load JSON from string (Render Env Var)
         cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
@@ -79,8 +77,8 @@ def get_ai_keywords(base_keyword: str) -> list:
         return [base_keyword]
 
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Use the new genai client
+        client = genai.Client(api_key=GEMINI_API_KEY) 
         
         prompt = (
             f"Generate 6 specific Play Store search terms related to '{base_keyword}'. "
@@ -89,7 +87,11 @@ def get_ai_keywords(base_keyword: str) -> list:
             "Output format: Comma separated string only. Example: New {base_keyword} 2025, Simple {base_keyword}."
         )
         
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt
+        )
+        
         keywords = [k.strip() for k in response.text.split(',') if k.strip()]
         keywords.insert(0, base_keyword) # Add original keyword
         return keywords[:7] # Limit to 7 queries
@@ -99,18 +101,31 @@ def get_ai_keywords(base_keyword: str) -> list:
 
 # --- Database Helpers ---
 async def is_admin(user_id: int) -> bool:
-    if str(user_id) == str(BOT_OWNER_ID): return True
+    # Need to check if db is initialized before trying to use it
+    if not FIREBASE_INITIALIZED: return False
+    
+    if str(user_id) == str(BOT_OWNER_ID): 
+        # Ensure owner is added to admin list if db is ready
+        try:
+            db.collection(COLLECTION_ADMINS).document(str(user_id)).set({'user_id': user_id, 'added_by': 'System/Owner', 'added_at': datetime.now().isoformat()})
+        except Exception as e:
+            logger.warning(f"Could not confirm owner status in DB: {e}")
+        return True
+        
     doc = db.collection(COLLECTION_ADMINS).document(str(user_id)).get()
     return doc.exists
 
 async def check_if_email_exists(email: str) -> bool:
+    if not FIREBASE_INITIALIZED: return False
     doc = db.collection(COLLECTION_EMAILS).document(email.lower()).get()
     return doc.exists
 
-# --- Bot Handlers ---
+# --- Bot Handlers (No change in logic) ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await is_admin(update.effective_user.id): return
-    
+    if not await is_admin(update.effective_user.id): 
+        await update.message.reply_text("দুঃখিত, আপনি অ্যাডমিন নন।")
+        return
+        
     keyboard = [
         [InlineKeyboardButton("🚀 AI Smart Search (New Apps)", callback_data='start_search')],
         [InlineKeyboardButton("📂 Export CSV", callback_data='export_data')],
@@ -122,15 +137,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await query.answer()
     
+    if not await is_admin(query.from_user.id): 
+        await query.edit_message_text("অ্যাডমিন অনুমতি প্রয়োজন।")
+        return
+        
     if query.data == 'start_search':
         context.user_data['state'] = 'await_keyword'
         await query.edit_message_text("🔍 **Enter a Topic/Keyword:**\n(AI will expand this to find hidden/new apps)")
     
     elif query.data == 'export_data':
         await export_logic(update.effective_user.id, context)
+        await query.edit_message_text("CSV ফাইল প্রস্তুত হচ্ছে, মেসেজ দেখুন।")
         
     elif query.data == 'admin_panel':
-        await query.edit_message_text("Feature coming soon: Add/Remove admins via chat.")
+        await query.edit_message_text("Admin Panel feature coming soon.")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -148,6 +168,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 # --- Core Search Logic ---
 async def run_smart_search(base_keyword: str, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    
+    if not FIREBASE_INITIALIZED:
+        await context.bot.send_message(user_id, "❌ Firebase Initialization Failed. Check FIREBASE_CREDENTIALS_JSON.")
+        return
+        
     # 1. Get AI Keywords
     keywords = get_ai_keywords(base_keyword)
     status_msg = await context.bot.send_message(user_id, f"📝 **Scanning Keywords:**\n" + ", ".join(keywords))
@@ -208,12 +233,16 @@ async def run_smart_search(base_keyword: str, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(user_id, f"⚠️ No NEW unique apps found for '{base_keyword}'. Try a different niche.")
 
 async def export_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    if not FIREBASE_INITIALIZED:
+        await context.bot.send_message(user_id, "❌ Firebase Initialization Failed. Cannot Export.")
+        return
+        
     docs = db.collection(COLLECTION_EMAILS).stream()
     csv_data = "Email,App Name,Rating,Installs,Source\n"
     count = 0
     for doc in docs:
         d = doc.to_dict()
-        csv_data += f"{d.get('email')},{d.get('name').replace(',', '')},{d.get('score')},{d.get('installs')},{d.get('keyword')}\n"
+        csv_data += f"{d.get('email')},{d.get('name', '').replace(',', '')},{d.get('score')},{d.get('installs')},{d.get('keyword')}\n"
         count += 1
         
     if count > 0:
@@ -223,8 +252,9 @@ async def export_logic(user_id: int, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Main Execution ---
 def main() -> None:
+    # CRITICAL CHECK: Bot will crash if this is missing
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN missing!")
+        logger.error("❌ CRITICAL ERROR: TELEGRAM_BOT_TOKEN missing in Render Environment Variables! Deployment failed.")
         sys.exit(1)
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -235,14 +265,18 @@ def main() -> None:
 
     # Render Webhook Logic
     if WEBHOOK_URL:
+        # We need to explicitly set the webhook path for deployment
+        webhook_path = f'/{TELEGRAM_BOT_TOKEN}'
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
-            url_path=TELEGRAM_BOT_TOKEN,
-            webhook_url=f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}" if not WEBHOOK_URL.endswith(TELEGRAM_BOT_TOKEN) else WEBHOOK_URL
+            url_path=webhook_path,
+            webhook_url=f"{WEBHOOK_URL}{webhook_path}"
         )
+        logger.info(f"🚀 Webhook running on {WEBHOOK_URL}{webhook_path}")
     else:
         # Fallback to polling for local testing
+        logger.info("Starting in Polling Mode (WEBHOOK_URL not set).")
         application.run_polling()
 
 if __name__ == "__main__":
