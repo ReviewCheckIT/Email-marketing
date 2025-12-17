@@ -1,4 +1,4 @@
 python-telegram-bot
 google-play-scraper
 firebase-admin
-google-generativeai
+google-genai # UPDATED: New library for Gemini
