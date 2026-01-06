@@ -1,4 +1,5 @@
-python-telegram-bot[webhooks]>=20.0
-google-play-scraper==1.2.7
-google-genai==0.3.0
-firebase-admin==6.5.0
+python-telegram-bot[webhooks]==20.8
+google-play-scraper
+google-genai
+firebase-admin
+httpx
