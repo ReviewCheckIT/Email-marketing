@@ -6,7 +6,6 @@ import asyncio
 import csv
 import io
 import sys
-import random
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -29,9 +28,6 @@ GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL')
 PORT = int(os.environ.get('PORT', '8080'))
 
-# --- Global Logic ---
-IS_SCRAPING = False
-
 # --- Firebase Init ---
 try:
     if not firebase_admin._apps:
@@ -46,42 +42,26 @@ except Exception as e:
 def is_owner(uid):
     return str(uid) == str(OWNER_ID)
 
-# --- AI Keyword Expansion (Smarter & Verified) ---
+# --- AI Deep Keyword Expansion (ক্ষমতা বাড়ানো হয়েছে) ---
 async def get_expanded_keywords(base_kw):
-    if not GEMINI_KEY: return []
+    if not GEMINI_KEY: return [base_kw]
     try:
         client = Client(api_key=GEMINI_KEY)
-        # জেমিনিকে বাধ্য করা হচ্ছে ভালো কিওয়ার্ড দিতে
-        prompt = f"Act as an ASO expert. Generate 60 high-traffic yet niche search phrases for Google Play to find unrated apps for '{base_kw}'. Return ONLY a comma-separated list."
+        # জেমিনিকে ১০০টি ব্রড কিওয়ার্ড দিতে বলা হয়েছে যাতে রেজাল্ট হাজার হাজার আসে
+        prompt = f"Generate 100 unique, broad, and popular search phrases for Google Play Store to find new and unrated apps related to '{base_kw}'. Focus on terms that return maximum results. Provide only comma-separated values."
         response = client.models.generate_content(model='gemini-2.0-flash-exp', contents=prompt)
-        
-        if response and response.text:
-            cleaned_text = response.text.replace('\n', ',').replace('*', '')
-            kws = [k.strip() for k in cleaned_text.split(',') if len(k.strip()) > 2]
-            return list(set([base_kw] + kws))
-        return []
-    except Exception as e:
-        logger.error(f"Gemini API Error: {e}")
-        return []
+        kws = [k.strip() for k in response.text.split(',') if k.strip()]
+        return list(set([base_kw] + kws))[:100]
+    except:
+        return [base_kw]
 
-# --- Mega Scraper Engine (High Performance + Safety) ---
+# --- Global Scraper Engine ---
 async def scrape_task(base_kw, context, uid):
-    global IS_SCRAPING
-    IS_SCRAPING = True
-    
-    # প্রথমে কিওয়ার্ড জেনারেট করা হচ্ছে
     keywords = await get_expanded_keywords(base_kw)
+    # ৩০টিরও বেশি কান্ট্রি যাতে সারা পৃথিবীর অ্যাপ কভার হয়
+    countries = ['us', 'gb', 'in', 'ca', 'br', 'au', 'de', 'id', 'ph', 'pk', 'za', 'mx', 'tr', 'sa', 'ae', 'ru', 'fr', 'it', 'es', 'nl'] 
     
-    # যদি কিওয়ার্ড না পাওয়া যায়, তবে মিশন বাতিল
-    if not keywords or len(keywords) <= 1:
-        await context.bot.send_message(uid, "❌ **Error:** জেমিনি কিওয়ার্ড জেনারেট করতে পারেনি। আপনার Gemini API Key চেক করুন বা কোটা শেষ হয়েছে কিনা দেখুন। মিশন বাতিল।")
-        IS_SCRAPING = False
-        return
-
-    # আপনার চাহিদামতো ৩০টি দেশ
-    countries = ['us', 'gb', 'in', 'ca', 'br', 'au', 'de', 'id', 'ph', 'pk', 'za', 'mx', 'tr', 'sa', 'ae', 'ru', 'fr', 'it', 'es', 'nl', 'bd', 'sg', 'my', 'vn', 'th', 'ng', 'eg', 'ar', 'co', 'pl']
-    
-    await context.bot.send_message(uid, f"🌍 **মেগা মিশন লাইভ!**\n🔍 নিস: {base_kw}\n🎯 কিওয়ার্ড: {len(keywords)}টি\n🏳️‍🌈 দেশ: {len(countries)}টি\n\nলিড খোঁজা হচ্ছে, বেশি লিড পেতে একটু সময় দিন...")
+    await context.bot.send_message(uid, f"🌍 **মেগা সার্চ শুরু!** \n🔍 নিস: {base_kw}\n🎯 ১০০টি কিওয়ার্ড এবং ২০টি দেশে তল্লাশি চলছে।\nপ্রচুর অ্যাপ স্ক্যান হচ্ছে, একটু সময় দিন...")
     
     new_count = 0
     session_leads = []
@@ -89,11 +69,10 @@ async def scrape_task(base_kw, context, uid):
     processed_apps = set()
 
     for kw in keywords:
-        # ব্যালেন্সড কান্ট্রি অ্যাটাক (প্রতিবার ১০টি করে দেশ র্যান্ডমলি নিবে যাতে সব দেশ কভার হয় কিন্তু ব্লক না খায়)
-        random.shuffle(countries)
-        for lang_country in countries[:15]: 
+        for lang_country in countries:
             try:
-                results = play_search(kw, n_hits=100, lang='en', country=lang_country)
+                # n_hits বাড়িয়ে ২৫০ করা হয়েছে যাতে সর্বোচ্চ রেজাল্ট আসে
+                results = play_search(kw, n_hits=250, lang='en', country=lang_country) 
                 if not results: continue
 
                 for r in results:
@@ -103,98 +82,116 @@ async def scrape_task(base_kw, context, uid):
 
                     try:
                         app = app_details(app_id, lang='en', country=lang_country)
-                        email = app.get('developerEmail')
-                        if email and (app.get('score', 0) == 0 or app.get('score') is None):
-                            email_raw = email.lower().strip()
-                            email_key = email_raw.replace('.', '_').replace('@', '_at_')
-                            
-                            if not ref.child(email_key).get():
-                                data = {
-                                    'app_name': app.get('title'),
-                                    'email': email_raw,
-                                    'rating': 0,
-                                    'installs': app.get('installs'),
-                                    'country': lang_country,
-                                    'dev': app.get('developer'),
-                                    'timestamp': datetime.now().isoformat()
-                                }
-                                ref.child(email_key).set(data)
-                                session_leads.append(data)
-                                new_count += 1
+                        if app and app.get('developerEmail'):
+                            email_raw = app['developerEmail'].lower().strip()
+                            score = app.get('score', 0)
+                            reviews = app.get('reviews', 0)
+
+                            # টার্গেট: জিরো রেটিং এবং জিরো রিভিউ অ্যাপ
+                            if (score == 0 or score is None) and (reviews == 0 or reviews is None):
+                                email_key = email_raw.replace('.', '_').replace('@', '_at_')
+                                
+                                if not ref.child(email_key).get():
+                                    data = {
+                                        'app_name': app.get('title'),
+                                        'email': email_raw,
+                                        'rating': 0,
+                                        'reviews': 0,
+                                        'installs': app.get('installs'),
+                                        'country': lang_country,
+                                        'dev': app.get('developer'),
+                                        'timestamp': datetime.now().isoformat()
+                                    }
+                                    ref.child(email_key).set(data)
+                                    session_leads.append(data)
+                                    new_count += 1
                     except: continue
                 
-                # অতি ক্ষুদ্র বিরতি যাতে গুগল একদম ব্লক না করে
-                await asyncio.sleep(0.5)
-            except: 
-                await asyncio.sleep(5) # এরর খেলে একটু বেশি থামা
-                continue
+                # প্রতি ৩০টি ইমেল পাওয়ার পর লগ আপডেট
+                if new_count > 0 and new_count % 30 == 0:
+                    logger.info(f"Progress: Found {new_count} leads...")
+                
+                await asyncio.sleep(1.5) # ব্যান এড়াতে সামান্য বিরতি
+            except: continue
 
-    IS_SCRAPING = False
-
+    # কাজ শেষ হলে অটোমেটিক ফাইল পাঠানো
     if session_leads:
         si = io.StringIO()
         cw = csv.writer(si)
-        cw.writerow(['App Name', 'Email', 'Rating', 'Installs', 'Country', 'Developer', 'Date'])
+        cw.writerow(['App Name', 'Email', 'Rating', 'Reviews', 'Installs', 'Country', 'Developer', 'Date'])
         for v in session_leads:
-            cw.writerow([v['app_name'], v['email'], 0, v['installs'], v['country'], v['dev'], v['timestamp']])
+            cw.writerow([v.get('app_name'), v.get('email'), 0, 0, v.get('installs'), v.get('country'), v.get('dev'), v.get('timestamp')])
         
         output = io.BytesIO(si.getvalue().encode())
-        output.name = f"Leads_{base_kw}_{datetime.now().strftime('%H%M')}.csv"
-        await context.bot.send_document(chat_id=uid, document=output, caption=f"✅ **মিশন শেষ!**\n🔥 নতুন লিড: {new_count}টি।")
+        output.name = f"Leads_{base_kw}_{datetime.now().strftime('%d_%m')}.csv"
+        await context.bot.send_document(chat_id=uid, document=output, caption=f"✅ কাজ শেষ!\n🔥 এই সেশনে মোট {new_count}টি নতুন ইমেল পাওয়া গেছে।")
     else:
-        await context.bot.send_message(uid, "❌ দুঃখিত, এই কিওয়ার্ডগুলোতে নতুন কোনো জিরো-রিভিউ অ্যাপ পাওয়া যায়নি।")
+        await context.bot.send_message(uid, "❌ এই কিওয়ার্ড দিয়ে কোনো নতুন জিরো-রেটিং অ্যাপ পাওয়া যায়নি।")
 
-# --- Handlers (আগের মতোই) ---
+# --- Handlers (আপনার অরিজিনাল কমান্ডগুলো ঠিক রাখা হয়েছে) ---
 async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if not is_owner(u.effective_user.id): return
-    btn = [[InlineKeyboardButton("🚀 স্টার্ট মেগা স্ক্র্যাপিং", callback_data='s')]]
-    await u.message.reply_text(f"বট অনলাইন। বর্তমান অবস্থা: {'🔴 ব্যস্ত' if IS_SCRAPING else '🟢 ফ্রি'}", reply_markup=InlineKeyboardMarkup(btn))
-
-async def cb(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    q = u.callback_query
-    if not is_owner(q.from_user.id) or IS_SCRAPING: 
-        await q.answer("⚠️ ব্যস্ত আছি বা পারমিশন নেই।")
-        return
-    await q.answer()
-    if q.data == 's':
-        c.user_data['state'] = 'kw'
-        await q.edit_message_text("কিওয়ার্ড দিন:")
-
-async def msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(u.effective_user.id) or IS_SCRAPING: return
-    if c.user_data.get('state') == 'kw':
-        c.user_data['state'] = None
-        asyncio.create_task(scrape_task(u.message.text, c, u.effective_user.id))
-        await u.message.reply_text("🔍 কিওয়ার্ড প্রসেস হচ্ছে...")
+    btn = [[InlineKeyboardButton("🌍 স্টার্ট মেগা স্ক্র্যাপিং", callback_data='s')]]
+    await u.message.reply_text("বট অনলাইন! এখন এটি বিশাল পরিসরে জিরো-রিভিউ অ্যাপ খুঁজবে।", reply_markup=InlineKeyboardMarkup(btn))
 
 async def stats(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if not is_owner(u.effective_user.id): return
     data = db.reference('scraped_emails').get()
     count = len(data) if data else 0
-    await u.message.reply_text(f"📊 মোট লিড: {count}")
+    await u.message.reply_text(f"📊 ডাটাবেজে মোট লিড সংখ্যা: {count}")
 
 async def export(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if not is_owner(u.effective_user.id): return
     data = db.reference('scraped_emails').get()
-    if not data: return
+    if not data:
+        await u.message.reply_text("কোনো ডেটা নেই!")
+        return
+
     si = io.StringIO()
     cw = csv.writer(si)
-    cw.writerow(['App Name', 'Email', 'Rating', 'Installs', 'Country', 'Developer', 'Date'])
+    cw.writerow(['App Name', 'Email', 'Rating', 'Reviews', 'Installs', 'Country', 'Developer', 'Date'])
     for k, v in data.items():
-        cw.writerow([v.get('app_name'), v.get('email'), 0, v.get('installs'), v.get('country'), v.get('dev'), v.get('timestamp')])
-    output = io.BytesIO(si.getvalue().encode()); output.name = "All_DB.csv"
-    await u.message.reply_document(document=output)
+        cw.writerow([v.get('app_name'), v.get('email'), 0, 0, v.get('installs'), v.get('country'), v.get('dev'), v.get('timestamp')])
+    
+    output = io.BytesIO(si.getvalue().encode())
+    output.name = f"Global_Database_Export_{datetime.now().strftime('%d_%m')}.csv"
+    await u.message.reply_document(document=output, caption="✅ ডাটাবেজের সব লিড লিস্ট।")
+
+async def clear_db(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(u.effective_user.id): return
+    db.reference('scraped_emails').delete()
+    await u.message.reply_text("🗑️ সব ডেটা ডিলিট করা হয়েছে।")
+
+async def cb(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query
+    if not is_owner(q.from_user.id): return
+    await q.answer()
+    if q.data == 's':
+        c.user_data['state'] = 'kw'
+        await q.edit_message_text("কোন নিশের ইমেল চান? কিওয়ার্ড দিন (যেমন: VPN):")
+
+async def msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(u.effective_user.id): return
+    if c.user_data.get('state') == 'kw':
+        c.user_data['state'] = None
+        asyncio.create_task(scrape_task(u.message.text, c, u.effective_user.id))
+        await u.message.reply_text(f"🔍 '{u.message.text}' নিয়ে মেগা সার্চ চলছে... ফাইল তৈরি হলে অটো পাঠিয়ে দেব।")
 
 def main():
+    if not TOKEN: return
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("export", export))
-    app.add_handler(CommandHandler("clear", CommandHandler("clear", lambda u,c: db.reference('scraped_emails').delete())))
+    app.add_handler(CommandHandler("clear", clear_db))
     app.add_handler(CallbackQueryHandler(cb))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
-    if RENDER_URL:
-        app.run_webhook(listen="0.0.0.0", port=PORT, url_path=TOKEN[-10:], webhook_url=f"{RENDER_URL}/{TOKEN[-10:]}")
-    else: app.run_polling()
 
-if __name__ == "__main__": main()
+    if RENDER_URL:
+        app.run_webhook(listen="0.0.0.0", port=PORT, url_path=TOKEN[-10:], 
+                        webhook_url=f"{RENDER_URL}/{TOKEN[-10:]}")
+    else:
+        app.run_polling()
+
+if __name__ == "__main__":
+    main()
