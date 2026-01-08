@@ -3,3 +3,4 @@ google-play-scraper
 google-genai
 firebase-admin
 httpx
+asyncio
